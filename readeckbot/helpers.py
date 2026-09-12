@@ -90,6 +90,16 @@ async def extract_url_title_labels(text: str):
     return url, (title if title else None), labels
 
 
+def parse_tag_edits(text: str) -> tuple[list[str], list[str]]:
+    """
+    Parse tags to add/remove from a reply like "+python -draft".
+    Returns (to_add, to_remove).
+    """
+    to_add = re.findall(r"\+(\w+)", text)
+    to_remove = re.findall(r"-(\w+)", text)
+    return to_add, to_remove
+
+
 def normalize_url(url: str) -> str:
     """
     Guarantee that the URL starts with a scheme and

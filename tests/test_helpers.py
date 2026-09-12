@@ -1,5 +1,5 @@
 import pytest
-from readeckbot.helpers import chunker
+from readeckbot.helpers import chunker, extract_url_title_labels, parse_tag_edits
 
 
 @pytest.mark.parametrize(
@@ -63,3 +63,53 @@ def test_chunker_trailing_spaces():
     text = "First sentence.  Second sentence.   Third sentence. "
     expected = ["First sentence.", "Second sentence.", "Third sentence."]
     assert chunker(text, 20) == expected
+
+
+@pytest.mark.asyncio
+async def test_extract_url_title_labels_url_only():
+    url, title, labels = await extract_url_title_labels("https://example.com")
+    assert url == "https://example.com"
+    assert title is None
+    assert labels == []
+
+
+@pytest.mark.asyncio
+async def test_extract_url_title_labels_with_title_and_tags():
+    url, title, labels = await extract_url_title_labels("https://example.com My Title +python +ml")
+    assert url == "https://example.com"
+    assert title == "My Title"
+    assert labels == ["python", "ml"]
+
+
+@pytest.mark.asyncio
+async def test_extract_url_title_labels_tags_only_no_title():
+    url, title, labels = await extract_url_title_labels("https://example.com +python")
+    assert url == "https://example.com"
+    assert title is None
+    assert labels == ["python"]
+
+
+@pytest.mark.asyncio
+async def test_extract_url_title_labels_no_url():
+    url, title, labels = await extract_url_title_labels("no link here")
+    assert url is None
+    assert title is None
+    assert labels == []
+
+
+def test_parse_tag_edits_add_and_remove():
+    to_add, to_remove = parse_tag_edits("+python -draft +ml")
+    assert to_add == ["python", "ml"]
+    assert to_remove == ["draft"]
+
+
+def test_parse_tag_edits_add_only():
+    to_add, to_remove = parse_tag_edits("+python +ml")
+    assert to_add == ["python", "ml"]
+    assert to_remove == []
+
+
+def test_parse_tag_edits_no_tags():
+    to_add, to_remove = parse_tag_edits("no tags here")
+    assert to_add == []
+    assert to_remove == []

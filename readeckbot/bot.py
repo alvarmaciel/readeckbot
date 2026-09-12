@@ -4,7 +4,7 @@ from pathlib import Path
 
 from io import BytesIO
 
-from telegram import Update, Message, MessageEntity, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Message, MessageEntity, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     CommandHandler,
     MessageHandler,
@@ -19,7 +19,7 @@ from telegramify_markdown import markdownify
 
 from . import requests, telegraph, config, __version__
 from .log import logger
-from .helpers import chunker, escape_markdown_v2, normalize_url
+from .helpers import chunker, escape_markdown_v2, normalize_url, extract_url_title_labels, parse_tag_edits
 from .readeck_client import (
     fetch_bookmarks,
     fetch_article_epub,
@@ -28,6 +28,8 @@ from .readeck_client import (
     archive_bookmark,
     favorite_bookmark,
     unfavorite_bookmark,
+    get_bookmark,
+    update_bookmark_labels,
     get_readeck_version,
     is_admin_user,
 )
@@ -92,15 +94,51 @@ async def restart_command(update: Update, context: CallbackContext) -> None:
     os._exit(0)
 
 
+TAG_EDIT_MARKER_RE = re.compile(r"#bm:(\w+)\s*$")
+
+
+async def handle_tag_edit_reply(update: Update, token: str, bookmark_id: str) -> None:
+    """Apply +tag/-tag edits (from a reply to a tags-edit prompt) to a bookmark."""
+    to_add, to_remove = parse_tag_edits(update.message.text)
+    info = await get_bookmark(bookmark_id, token)
+    current_labels = set(info.get("labels", []))
+    new_labels = sorted((current_labels - set(to_remove)) | set(to_add))
+    await update_bookmark_labels(bookmark_id, new_labels, token)
+    logger.info(f"Updated tags for bookmark {bookmark_id}: {new_labels}")
+
+    tags_text = ", ".join(new_labels) if new_labels else "ninguno"
+    reply_markup = build_inline_keyboard(
+        bookmark_id,
+        info.get("is_marked", False),
+        show_read=True,
+        show_publish=True,
+        show_epub=True,
+        show_summarize=bool(llm),
+        show_archive=False,
+        show_tags=True,
+    )
+    await update.message.reply_text(f"Tags actualizados: {tags_text}", reply_markup=reply_markup)
+
+
 async def handle_message(update: Update, context: CallbackContext) -> None:
     """
     Handle non-command text messages:
-    - If the message contains a URL, save it as a bookmark.
+    - If replying to a tags-edit prompt, add/remove tags on that bookmark.
+    - If the message contains a URL, save it as a bookmark (optionally with +tag labels).
     - Otherwise, provide guidance.
     """
     user_id = update.effective_user.id
 
     token = config.USER_TOKEN_MAP.get(str(user_id))
+
+    reply_to = update.message.reply_to_message
+    if reply_to and reply_to.text:
+        marker_match = TAG_EDIT_MARKER_RE.search(reply_to.text)
+        if marker_match:
+            await handle_tag_edit_reply(update, token, marker_match.group(1))
+            return
+
+    _, title, labels = await extract_url_title_labels(update.message.text)
 
     for ent in update.message.entities:
         if ent.type == MessageEntity.TEXT_LINK:
@@ -110,7 +148,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
         else:
             continue
 
-        bookmark_id = await save_bookmark(url, token)
+        bookmark_id = await save_bookmark(url, token, title=title, labels=labels)
         await reply_details(update.message, token, bookmark_id)
         logger.info(f"Saved bookmark with ID {bookmark_id}")
 
@@ -220,6 +258,7 @@ def build_inline_keyboard(
     show_epub=True,
     show_summarize=False,
     show_archive=False,
+    show_tags=True,
 ):
     """Builds the inline keyboard for bookmark actions, including favorite toggle and optional actions."""
     # Favorite toggle button (emoji only)
@@ -232,6 +271,8 @@ def build_inline_keyboard(
         buttons.append(InlineKeyboardButton("Read", callback_data=f"read_{bookmark_id}"))
     if show_publish:
         buttons.append(InlineKeyboardButton("Publish", callback_data=f"pub_{bookmark_id}"))
+    if show_tags:
+        buttons.append(InlineKeyboardButton("🏷️ Tags", callback_data=f"tags_{bookmark_id}"))
     # Insert favorite button at the beginning of the first row
     row1 = [button_fav] + buttons if buttons else [button_fav]
 
@@ -257,14 +298,7 @@ def build_inline_keyboard(
 
 async def reply_details(message: Message, token: str, bookmark_id: str):
     """Reply with details about the saved bookmark. Include a keyboard of actions"""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "accept": "application/json",
-        "content-type": "application/json",
-    }
-    details = await requests.get(f"{config.READECK_BASE_URL}/api/bookmarks/{bookmark_id}", headers=headers)
-    details.raise_for_status()
-    info = details.json()
+    info = await get_bookmark(bookmark_id, token)
     logger.info(info)
     title = info.get("title") or info.get("url")
     url = info.get("url")
@@ -277,6 +311,7 @@ async def reply_details(message: Message, token: str, bookmark_id: str):
         show_epub=True,
         show_summarize=bool(llm),
         show_archive=False,
+        show_tags=True,
     )
     await message.reply_markdown_v2(f"[{escape_markdown_v2(title)}]({url})", reply_markup=reply_markup)
 
@@ -363,14 +398,7 @@ async def read_handler(update: Update, context: CallbackContext) -> None:
         reply_markup = InlineKeyboardMarkup([[button_read]])
     else:
         # Last chunk, show Archive and Favorite toggle buttons
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "accept": "application/json",
-            "content-type": "application/json",
-        }
-        details = await requests.get(f"{config.READECK_BASE_URL}/api/bookmarks/{bookmark_id}", headers=headers)
-        details.raise_for_status()
-        info = details.json()
+        info = await get_bookmark(bookmark_id, token)
         is_favorite = info.get("is_marked", False)
         reply_markup = build_inline_keyboard(
             bookmark_id,
@@ -380,6 +408,7 @@ async def read_handler(update: Update, context: CallbackContext) -> None:
             show_epub=False,
             show_summarize=False,
             show_archive=True,
+            show_tags=False,
         )
 
     await query.message.reply_text(chunk, reply_markup=reply_markup)
@@ -415,14 +444,7 @@ async def favorite_bookmark_handler(update: Update, context: CallbackContext) ->
         await unfavorite_bookmark(bookmark_id, token)
 
     # Fetch updated details to get new favorite state
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "accept": "application/json",
-        "content-type": "application/json",
-    }
-    details = await requests.get(f"{config.READECK_BASE_URL}/api/bookmarks/{bookmark_id}", headers=headers)
-    details.raise_for_status()
-    info = details.json()
+    info = await get_bookmark(bookmark_id, token)
     is_favorite = info.get("is_marked", False)
 
     # Try to detect context (detail or end-of-article) by inspecting the message text/buttons if needed
@@ -446,6 +468,7 @@ async def favorite_bookmark_handler(update: Update, context: CallbackContext) ->
         show_epub=not show_archive,
         show_summarize=not show_archive and bool(llm),
         show_archive=show_archive,
+        show_tags=not show_archive,
     )
 
     try:
@@ -454,6 +477,30 @@ async def favorite_bookmark_handler(update: Update, context: CallbackContext) ->
         # Ignore "Message is not modified" error, log others
         if "Message is not modified" not in str(e):
             logger.error(f"Failed to update inline keyboard: {e}")
+
+
+async def tags_prompt_handler(update: Update, context: CallbackContext) -> None:
+    """Prompt the user to add/remove tags on a bookmark via a ForceReply."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data  # 'tags_<bookmark_id>'
+    _, bookmark_id = data.split("_", 1)
+
+    user_id = update.effective_user.id
+    token = config.USER_TOKEN_MAP.get(str(user_id))
+
+    info = await get_bookmark(bookmark_id, token)
+    title = info.get("title") or info.get("url")
+    current_labels = info.get("labels", [])
+    tags_text = ", ".join(current_labels) if current_labels else "ninguno"
+
+    await query.message.reply_text(
+        f'Tags de "{title}":\nActuales: {tags_text}\n\n'
+        'Respondé con +tag para agregar, -tag para quitar. Podés combinar varios: "+python -draft".\n'
+        f"#bm:{bookmark_id}",
+        reply_markup=ForceReply(selective=True, input_field_placeholder="+tag o -tag"),
+    )
 
 
 async def epub_handler(update: Update, context: CallbackContext) -> None:
@@ -643,12 +690,18 @@ def main():
     application.add_handler(CallbackQueryHandler(epub_handler, pattern=r"^epub_"))
     application.add_handler(CallbackQueryHandler(archive_bookmark_handler, pattern=r"^archive_"))
     application.add_handler(CallbackQueryHandler(favorite_bookmark_handler, pattern=r"^(favorite|unfavorite)_"))
+    application.add_handler(CallbackQueryHandler(tags_prompt_handler, pattern=r"^tags_"))
     if llm:
         application.add_handler(CallbackQueryHandler(summarize_handler, pattern=r"^summarize_"))
 
-    # Non-command messages (likely bookmarks)
-    application.add_handler(MessageHandler(filters.Regex(r"^/b_\w+"), handle_detail_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Non-command messages (likely bookmarks). Restrict to genuine new messages
+    # (UpdateType.MESSAGE) so edited messages, which carry no `update.message`, are ignored.
+    application.add_handler(
+        MessageHandler(filters.UpdateType.MESSAGE & filters.Regex(r"^/b_\w+"), handle_detail_command)
+    )
+    application.add_handler(
+        MessageHandler(filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND, handle_message)
+    )
 
     application.add_error_handler(error_handler)
 
