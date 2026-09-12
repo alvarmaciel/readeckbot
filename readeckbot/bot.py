@@ -331,10 +331,10 @@ async def summarize_handler(update: Update, context: CallbackContext) -> None:
     # 2) Build a prompt instructing the LLM to summarize in the same language
     #    and limit the summary to ~LLM_SUMMARY_MAX_LENGTH characters.
     prompt = (
-        f"Summarize the following article. Keep the summary under {config.LLM_SUMMARY_MAX_LENGTH} characters. ",
-        "Answer in the language of the original text (eg: spanish if the source is spanish, english if the source is english).\n\n",
-        "ARTICLE:\n\n",
-        article_text,
+        f"Summarize the following article. Keep the summary under {config.LLM_SUMMARY_MAX_LENGTH} characters. "
+        "Answer in the language of the original text (eg: spanish if the source is spanish, english if the source is english).\n\n"
+        "ARTICLE:\n\n"
+        f"{article_text}"
     )
     try:
         # 3) Call the llm library - usage will vary depending on your LLM setup
