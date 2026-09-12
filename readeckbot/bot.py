@@ -694,9 +694,14 @@ def main():
     if llm:
         application.add_handler(CallbackQueryHandler(summarize_handler, pattern=r"^summarize_"))
 
-    # Non-command messages (likely bookmarks)
-    application.add_handler(MessageHandler(filters.Regex(r"^/b_\w+"), handle_detail_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Non-command messages (likely bookmarks). Restrict to genuine new messages
+    # (UpdateType.MESSAGE) so edited messages, which carry no `update.message`, are ignored.
+    application.add_handler(
+        MessageHandler(filters.UpdateType.MESSAGE & filters.Regex(r"^/b_\w+"), handle_detail_command)
+    )
+    application.add_handler(
+        MessageHandler(filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND, handle_message)
+    )
 
     application.add_error_handler(error_handler)
 
