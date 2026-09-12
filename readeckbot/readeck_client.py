@@ -110,7 +110,7 @@ async def fetch_article_epub(bookmark_id: str, token: str):
     return BytesIO(r.content)
 
 
-async def save_bookmark(url: str, token: str):
+async def save_bookmark(url: str, token: str, title: str | None = None, labels: list[str] | None = None):
     """Save a bookmark to Readeck and return a link and the bookmark_id."""
     headers = {
         "Authorization": f"Bearer {token}",
@@ -118,9 +118,40 @@ async def save_bookmark(url: str, token: str):
         "content-type": "application/json",
     }
 
-    r = await requests.post(f"{READECK_BASE_URL}/api/bookmarks", json={"url": url}, headers=headers)
+    payload = {"url": url}
+    if title:
+        payload["title"] = title
+    if labels:
+        payload["labels"] = labels
+
+    r = await requests.post(f"{READECK_BASE_URL}/api/bookmarks", json=payload, headers=headers)
     r.raise_for_status()
     return r.headers.get("Bookmark-Id")
+
+
+async def get_bookmark(bookmark_id: str, token: str) -> dict[str, Any]:
+    """Fetch a single bookmark's details by its ID."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "accept": "application/json",
+        "content-type": "application/json",
+    }
+    r = await requests.get(f"{READECK_BASE_URL}/api/bookmarks/{bookmark_id}", headers=headers)
+    r.raise_for_status()
+    return r.json()
+
+
+async def update_bookmark_labels(bookmark_id: str, labels: list[str], token: str):
+    """Replace a bookmark's labels (tags) with the given list."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "content-type": "application/json",
+    }
+    patch_url = f"{READECK_BASE_URL}/api/bookmarks/{bookmark_id}"
+    payload = {"labels": labels}
+    response = await requests.patch(patch_url, headers=headers, json=payload)
+    response.raise_for_status()
+    return True
 
 
 async def archive_bookmark(bookmark_id: str, token: str):

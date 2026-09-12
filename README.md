@@ -4,7 +4,8 @@ It's based on the [python-telegram-bot](https://python-telegram-bot.org/) framew
 Features:
 
 - /register (create a new user) or /token to register the bot with an existent user
-- Save bookmarks by sending a URL (with optional title and tags).
+- Save bookmarks by sending a URL (with optional title and tags, e.g. `https://example.com My Title +python +ml`).
+- Add/remove tags on a saved bookmark with the 🏷️ Tags button (reply `+tag` to add, `-tag` to remove).
 - Read. Create a simplified version of the article in telegra.ph
 - /md_<id> return the raw markdown
 - /list  . unread articles
